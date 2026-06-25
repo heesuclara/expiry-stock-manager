@@ -520,10 +520,18 @@ def page_analysis():
                     "팀", stock_meta["teams"], label_visibility="collapsed"
                 )
 
-                available_brands = stock_meta["team_brands"].get(selected_team, [])
+                # 전체 팀에서 고유 브랜드 목록 수집 (순서 유지)
+                all_brands: list = []
+                seen_b: set = set()
+                for _brands in stock_meta["team_brands"].values():
+                    for _b in _brands:
+                        if _b not in seen_b:
+                            all_brands.append(_b)
+                            seen_b.add(_b)
+
                 st.markdown("##### 2차: 브랜드 선택 *(필수, 다중)*")
                 selected_brands = st.multiselect(
-                    "브랜드", available_brands,
+                    "브랜드", all_brands,
                     default=None,
                     label_visibility="collapsed",
                     placeholder="브랜드를 선택하세요",
@@ -533,7 +541,8 @@ def page_analysis():
                 if selected_brands:
                     sel_codes: set = set()
                     for b in selected_brands:
-                        sel_codes.update(stock_meta["team_brand_codes"][selected_team].get(b, []))
+                        for _team_codes in stock_meta["team_brand_codes"].values():
+                            sel_codes.update(_team_codes.get(b, []))
                     has_overseas_in_sel = bool(sel_codes & stock_meta["overseas_codes"])
                     if has_overseas_in_sel:
                         st.markdown("##### 3차: 해외전용 포함 *(선택)*")
@@ -606,7 +615,8 @@ def page_analysis():
                     sel_codes: set  = set()
                     code_to_brand: dict = {}
                     for brand in selected_brands:
-                        for c in stock_meta["team_brand_codes"][selected_team].get(brand, []):
+                        for _tc in stock_meta["team_brand_codes"].values():
+                          for c in _tc.get(brand, []):
                             if include_overseas or c not in stock_meta["overseas_codes"]:
                                 sel_codes.add(c)
                                 code_to_brand[c] = brand
