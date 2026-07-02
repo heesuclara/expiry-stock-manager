@@ -1,7 +1,3 @@
 @echo off
-powershell -ExecutionPolicy Bypass -File "%~dp0deploy.ps1"
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo  오류가 발생했습니다. 위 메시지를 확인하세요.
-    pause
-)
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -File "%~dp0deploy.ps1"
+pause

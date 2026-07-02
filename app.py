@@ -47,6 +47,16 @@ st.markdown("""
         border-radius: 4px; padding: 0.4rem 0.9rem;
         font-size: 0.88em; margin-top: 0.4rem;
     }
+    .incoming-badge {
+        background: #3b82f61a; border-left: 3px solid #3b82f6;
+        border-radius: 4px; padding: 0.4rem 0.9rem;
+        font-size: 0.88em; margin-top: 0.4rem;
+    }
+    .nostock-badge {
+        background: #ef44441a; border-left: 3px solid #ef4444;
+        border-radius: 4px; padding: 0.4rem 0.9rem;
+        font-size: 0.88em; margin-top: 0.4rem;
+    }
     .f2-note {
         background: #7c3aed11; border-left: 3px solid #7c3aed;
         border-radius: 4px; padding: 0.3rem 0.8rem;
@@ -165,6 +175,52 @@ def read_stock_sheet(file_bytes: bytes) -> dict:
     return result
 
 
+# ─── 입고예정(구매) 로더 ──────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def read_incoming_sheet(file_bytes: bytes) -> dict:
+    """입고예정(구매) 시트 → {상품코드: {잔량, 현재입고예정일}} 반환"""
+    _BASE = datetime(1899, 12, 30)
+    def _to_str(v):
+        if v is None:
+            return ""
+        if isinstance(v, str):
+            return v.strip()
+        try:
+            return (_BASE + timedelta(days=int(v))).strftime("%Y-%m-%d")
+        except Exception:
+            return str(v)
+
+    result: dict = {}
+    try:
+        with pyxlsb.open_workbook(BytesIO(file_bytes)) as wb:
+            with wb.get_sheet("입고예정(구매)") as sheet:
+                rows = list(sheet.rows())
+                for row in rows[3:]:          # header=row2, data from row3
+                    vals = [c.v for c in row]
+                    if len(vals) <= 3:
+                        continue
+                    code = vals[3]
+                    if not isinstance(code, str) or not code.strip():
+                        continue
+                    code = code.strip()
+                    잔량_raw = vals[10] if len(vals) > 10 else 0
+                    예정일_raw = vals[12] if len(vals) > 12 else None
+                    try:
+                        잔량 = int(잔량_raw or 0)
+                    except (ValueError, TypeError):
+                        잔량 = 0
+                    예정일 = _to_str(예정일_raw)
+
+                    if code not in result:
+                        result[code] = {"잔량": 0, "현재입고예정일": ""}
+                    result[code]["잔량"] += 잔량
+                    if not result[code]["현재입고예정일"] and 예정일:
+                        result[code]["현재입고예정일"] = 예정일
+    except Exception:
+        pass
+    return result
+
+
 # ─── 유통기한관리 로더 ───────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_file1(file_bytes: bytes, code_whitelist: tuple, code_to_brand_tuple: tuple) -> dict:
@@ -255,7 +311,7 @@ def load_resale_prevention() -> dict:
 
 
 # ─── 분석 엔진 ──────────────────────────────────────────────────
-def generate_report(brand_products, product_cats, product_f2_dates, today, resale_prevention):
+def generate_report(brand_products, product_cats, product_f2_dates, today, resale_prevention, incoming_plan=None):
     results = []
 
     for code, info in brand_products.items():
@@ -308,6 +364,25 @@ def generate_report(brand_products, product_cats, product_f2_dates, today, resal
 
         resale_info = resale_prevention.get(code)
 
+        # 입고예정 확인 (3개월 내 조치 필요 항목만)
+        incoming_info = None
+        if incoming_plan is not None and urgency_order <= 2:
+            plan = incoming_plan.get(code)
+            if plan and plan["잔량"] > 0:
+                incoming_info = {
+                    "status": "입고예정",
+                    "action": "품절처리 문의",
+                    "잔량": plan["잔량"],
+                    "예정일": plan["현재입고예정일"],
+                }
+            else:
+                incoming_info = {
+                    "status": "미입고예정",
+                    "action": "단종처리 문의",
+                    "잔량": 0,
+                    "예정일": "",
+                }
+
         results.append({
             "urgency_order":    urgency_order,
             "cat_order":        cat_order,
@@ -328,6 +403,7 @@ def generate_report(brand_products, product_cats, product_f2_dates, today, resal
             "f2_only_min":      f2_only_min,
             "has_resale":       resale_info is not None,
             "resale_info":      resale_info,
+            "incoming_info":    incoming_info,
         })
 
     results.sort(key=lambda x: (x["urgency_order"], x["cat_order"], x["action_date"]))
@@ -435,9 +511,15 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
     rows = []
     for r in brand_items:
         resale_flag = "✌️" if r["has_resale"] else ""
+        inc = r.get("incoming_info")
+        if inc:
+            inc_flag = "📦 입고예정" if inc["status"] == "입고예정" else "⛔ 미입고예정"
+        else:
+            inc_flag = ""
         rows.append({
             "✅ 완료": False,
             "재판매방지": resale_flag,
+            "입고예정": inc_flag,
             "긴급도":     r["urgency"],
             "구분":       r["category"],
             "품명":       r["name"],
@@ -455,6 +537,7 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
         column_config={
             "✅ 완료":   st.column_config.CheckboxColumn("✅ 완료", default=False, width="small"),
             "재판매방지": st.column_config.TextColumn("✌️재판매", width="small"),
+            "입고예정":  st.column_config.TextColumn("입고예정", width="small"),
             "긴급도":    st.column_config.TextColumn("긴급도", width="medium"),
             "구분":      st.column_config.TextColumn("구분", width="small"),
             "품명":      st.column_config.TextColumn("품명", width="large"),
@@ -464,7 +547,7 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
             "액션 날짜": st.column_config.TextColumn("액션 날짜", width="medium"),
             "조치사항":  st.column_config.TextColumn("조치사항", width="large"),
         },
-        disabled=["재판매방지","긴급도","구분","품명","소비기한","남은 기간","재고(개)","액션 날짜","조치사항"],
+        disabled=["재판매방지","입고예정","긴급도","구분","품명","소비기한","남은 기간","재고(개)","액션 날짜","조치사항"],
         hide_index=True,
         use_container_width=True,
         key=f"checklist_{brand}_{run_id}",
@@ -628,9 +711,10 @@ def page_analysis():
                     brand_products = load_file1(f1_bytes, code_whitelist, code_to_brand_tuple)
                     product_cats, product_f2_dates = load_file2(f2_bytes)
                     resale_prevention = load_resale_prevention()
+                    incoming_plan = read_incoming_sheet(f1_bytes)
                     results = generate_report(
                         brand_products, product_cats, product_f2_dates,
-                        today_input, resale_prevention,
+                        today_input, resale_prevention, incoming_plan,
                     )
                     st.session_state["results"]         = results
                     st.session_state["today_used"]      = today_input
@@ -779,6 +863,27 @@ def page_analysis():
                         + '</div>',
                         unsafe_allow_html=True,
                     )
+
+                # 입고예정 여부 표시
+                inc = r.get("incoming_info")
+                if inc:
+                    if inc["status"] == "입고예정":
+                        예정일_txt = f" (입고예정일: {inc['예정일']})" if inc["예정일"] else ""
+                        st.markdown(
+                            f'<div class="incoming-badge">'
+                            f'📦 <b>입고예정 확인됨{예정일_txt}</b> — 발주잔량 {inc["잔량"]:,}개<br>'
+                            f'💡 추천 조치: <b>품절처리 문의</b> (신규 입고 예정이므로 단종 전 품절 처리)'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f'<div class="nostock-badge">'
+                            f'⛔ <b>입고예정 없음</b> — 입고예정(구매) 시트에 해당 코드 없음<br>'
+                            f'💡 추천 조치: <b>단종처리 문의</b> (추가 입고 계획 없으므로 단종 검토)'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
 
                 badge_class = (
                     "urgent-badge"  if r["urgency_order"] == 0
