@@ -275,7 +275,15 @@ def load_file2(file_bytes: bytes) -> tuple:
     product_f2_dates: dict = defaultdict(list)
 
     wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True)
-    ws = wb["상품별수불현황"]
+    # 시트 이름이 파일 버전마다 다를 수 있으므로 순서대로 탐색
+    _candidates = ["상품별수불현황", "유통기한임박재고", "Sheet1", "시트1"]
+    ws = None
+    for _name in _candidates:
+        if _name in wb.sheetnames:
+            ws = wb[_name]
+            break
+    if ws is None:
+        ws = wb[wb.sheetnames[0]]   # 후보 없으면 첫 번째 시트
     current_cat = None
 
     for i, row in enumerate(ws.iter_rows(values_only=True)):
