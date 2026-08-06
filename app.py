@@ -261,10 +261,11 @@ def load_file1(file_bytes: bytes, code_whitelist: tuple, code_to_brand_tuple: tu
                         "brand": brand,
                         "lots": [],
                     }
-                if 유통기한 is not None:
+                stock_qty = int(재고) if 재고 else 0
+                if 유통기한 is not None and stock_qty > 0:
                     brand_products[코드]["lots"].append({
                         "expiry": 유통기한,
-                        "stock": int(재고) if 재고 else 0,
+                        "stock": stock_qty,
                     })
     return brand_products
 
@@ -358,8 +359,11 @@ def generate_report(brand_products, product_cats, product_f2_dates, today, resal
         lots_sorted = sorted(info["lots"], key=lambda x: x["expiry"])
         total_stock = sum(l["stock"] for l in lots_sorted)
 
-        f1_dates = [l["expiry"] for l in lots_sorted]
+        f1_dates = [l["expiry"] for l in lots_sorted if l["stock"] > 0]
         f2_dates = product_f2_dates.get(code, [])
+
+        if not f1_dates:
+            continue
 
         # ── File1 우선 기준: min_expiry는 신재고입출고(File1) 기준 ──
         min_expiry = min(f1_dates)
