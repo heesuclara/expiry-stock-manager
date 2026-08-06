@@ -15,6 +15,7 @@ warnings.filterwarnings("ignore")
 _DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_PATH = os.path.join(_DIR, "data", "history.json")
 RESALE_PATH  = os.path.join(_DIR, "data", "resale_prevention.json")
+STATUS_PATH  = os.path.join(_DIR, "data", "product_status.json")
 
 st.set_page_config(
     page_title="유통기한 임박재고 분석",
@@ -317,8 +318,34 @@ def load_resale_prevention() -> dict:
     return {}
 
 
+# ─── 품절/단종 상태 관리 ─────────────────────────────────────────
+def load_product_status() -> list:
+    """data/product_status.json → 품절/단종 키워드 목록"""
+    if os.path.exists(STATUS_PATH):
+        try:
+            with open(STATUS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def save_product_status(data: list):
+    """품절/단종 목록 저장"""
+    os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
+    with open(STATUS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def match_product_status(name: str, status_list: list):
+    """품명에 키워드가 포함되면 (status, keyword) 반환, 없으면 (None, None)
+    더 긴 키워드(구체적인 것)를 우선 매칭"""
+    for item in sorted(status_list, key=lambda x: len(x["keyword"]), reverse=True):
+        if item["keyword"] in name:
+            return item["status"], item["keyword"]
+    return None, None
+
+
 # ─── 분석 엔진 ──────────────────────────────────────────────────
-def generate_report(brand_products, product_cats, product_f2_dates, today, resale_prevention, incoming_plan=None):
+def generate_report(brand_products, product_cats, product_f2_dates, today, resale_prevention, incoming_plan=None, product_status=None):
     results = []
 
     for code, info in brand_products.items():
@@ -431,6 +458,7 @@ def generate_report(brand_products, product_cats, product_f2_dates, today, resal
             "is_kakao":           is_kakao,
             "needs_doublecheck":  needs_doublecheck,
             "f2_discrepancy":     f2_discrepancy,
+            "product_status":     match_product_status(info["name"], product_status or [])[0],
         })
 
     results.sort(key=lambda x: (x["urgency_order"], x["cat_order"], x["action_date"]))
@@ -748,9 +776,10 @@ def page_analysis():
                     product_cats, product_f2_dates = load_file2(f2_bytes)
                     resale_prevention = load_resale_prevention()
                     incoming_plan = read_incoming_sheet(f1_bytes)
+                    product_status = load_product_status()
                     results = generate_report(
                         brand_products, product_cats, product_f2_dates,
-                        today_input, resale_prevention, incoming_plan,
+                        today_input, resale_prevention, incoming_plan, product_status,
                     )
                     st.session_state["results"]         = results
                     st.session_state["today_used"]      = today_input
@@ -767,6 +796,16 @@ def page_analysis():
         if not results:
             st.warning("매칭된 제품이 없습니다. 파일2에 대상 제품이 없거나 파일을 확인해 주세요.")
             st.stop()
+
+        # ── 품절/단종 제품 분리 ─────────────────────────────
+        excluded = [r for r in results if r.get("product_status") in ("품절", "단종")]
+        results  = [r for r in results if r.get("product_status") not in ("품절", "단종")]
+
+        if excluded:
+            with st.expander(f"🚫 이미 품절/단종 처리된 제품 {len(excluded)}개 (분석 제외)", expanded=False):
+                ex_rows = [{"상태": r["product_status"], "브랜드": r["brand"],
+                            "품명": r["name"], "소비기한": str(r["min_expiry"])} for r in excluded]
+                st.dataframe(pd.DataFrame(ex_rows), hide_index=True, use_container_width=True)
 
         # ── 히스토리 자동 저장 ──────────────────────────────
         month_key = today_used.strftime("%Y-%m")
@@ -1116,11 +1155,64 @@ def page_history():
                             st.info(f"{brand} 없음")
 
 
+# ─── 품절/단종 관리 페이지 ───────────────────────────────────────
+def page_status():
+    st.markdown("## 🚫 품절/단종 제품 관리")
+    st.caption("이 목록에 등록된 제품은 분석에서 자동 제외됩니다.")
+
+    status_list = load_product_status()
+
+    # ── 현재 목록 ──
+    if status_list:
+        st.markdown("### 현재 목록")
+        df = pd.DataFrame(status_list)[["brand", "keyword", "status"]]
+        df.columns = ["브랜드", "키워드", "상태"]
+        st.dataframe(df, hide_index=True, use_container_width=True)
+    else:
+        st.info("등록된 품절/단종 제품 없음")
+
+    st.divider()
+
+    # ── 추가 ──
+    st.markdown("### ➕ 새 제품 추가")
+    col1, col2, col3 = st.columns(3)
+    new_kw     = col1.text_input("품명 키워드", placeholder="예: 이뮨베라 키즈")
+    new_brand  = col2.selectbox("브랜드", ["웰릿", "클리너리", "기타"])
+    new_status = col3.selectbox("상태", ["품절", "단종"])
+
+    if st.button("추가", type="primary", disabled=not new_kw.strip()):
+        if any(i["keyword"] == new_kw.strip() for i in status_list):
+            st.warning("이미 등록된 키워드입니다.")
+        else:
+            status_list.append({"keyword": new_kw.strip(), "brand": new_brand, "status": new_status})
+            save_product_status(status_list)
+            st.success(f"✅ '{new_kw.strip()}' 추가됨")
+            st.rerun()
+
+    st.divider()
+
+    # ── 삭제 ──
+    if status_list:
+        st.markdown("### 🗑️ 제품 삭제")
+        del_kw = st.selectbox(
+            "삭제할 항목 선택",
+            options=[i["keyword"] for i in status_list],
+        )
+        if st.button("삭제", type="secondary"):
+            status_list = [i for i in status_list if i["keyword"] != del_kw]
+            save_product_status(status_list)
+            st.success(f"🗑️ '{del_kw}' 삭제됨")
+            st.rerun()
+
+    st.divider()
+    st.caption("변경 후 GitHub에 push해야 배포 앱에 반영됩니다.")
+
+
 # ─── 메인 라우터 ──────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 📦 유통기한 임박재고")
     page = st.radio(
-        "페이지", ["📊 분석", "📋 히스토리"],
+        "페이지", ["📊 분석", "📋 히스토리", "🚫 품절/단종 관리"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1129,3 +1221,5 @@ if page == "📊 분석":
     page_analysis()
 elif page == "📋 히스토리":
     page_history()
+elif page == "🚫 품절/단종 관리":
+    page_status()
