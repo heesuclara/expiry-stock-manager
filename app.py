@@ -342,7 +342,10 @@ def generate_report(brand_products, product_cats, product_f2_dates, today, resal
 
         months = months_remaining(min_expiry, today)
 
-        raw_action  = min_expiry - relativedelta(months=4)
+        # 선물세트: 1개 = 2개월치 소비 → 3개월 전 조치 (일반: 4개월 전)
+        is_gift_set = "선물세트" in info["name"]
+        action_months = 3 if is_gift_set else 4
+        raw_action  = min_expiry - relativedelta(months=action_months)
         action_date = adjust_to_weekday(raw_action)
         weekend_adj = action_date != raw_action
 
@@ -411,6 +414,7 @@ def generate_report(brand_products, product_cats, product_f2_dates, today, resal
             "has_resale":       resale_info is not None,
             "resale_info":      resale_info,
             "incoming_info":    incoming_info,
+            "is_gift_set":      is_gift_set,
         })
 
     results.sort(key=lambda x: (x["urgency_order"], x["cat_order"], x["action_date"]))
@@ -523,9 +527,11 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
             inc_flag = "📦 입고예정" if inc["status"] == "입고예정" else "⛔ 미입고예정"
         else:
             inc_flag = ""
+        gift_flag = "🎁" if r.get("is_gift_set") else ""
         rows.append({
             "✅ 완료": False,
             "재판매방지": resale_flag,
+            "선물세트": gift_flag,
             "입고예정": inc_flag,
             "긴급도":     r["urgency"],
             "구분":       r["category"],
@@ -544,6 +550,7 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
         column_config={
             "✅ 완료":   st.column_config.CheckboxColumn("✅ 완료", default=False, width="small"),
             "재판매방지": st.column_config.TextColumn("✌️재판매", width="small"),
+            "선물세트":  st.column_config.TextColumn("🎁세트", width="small"),
             "입고예정":  st.column_config.TextColumn("입고예정", width="small"),
             "긴급도":    st.column_config.TextColumn("긴급도", width="medium"),
             "구분":      st.column_config.TextColumn("구분", width="small"),
@@ -554,7 +561,7 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
             "액션 날짜": st.column_config.TextColumn("액션 날짜", width="medium"),
             "조치사항":  st.column_config.TextColumn("조치사항", width="large"),
         },
-        disabled=["재판매방지","입고예정","긴급도","구분","품명","소비기한","남은 기간","재고(개)","액션 날짜","조치사항"],
+        disabled=["재판매방지","선물세트","입고예정","긴급도","구분","품명","소비기한","남은 기간","재고(개)","액션 날짜","조치사항"],
         hide_index=True,
         use_container_width=True,
         key=f"checklist_{brand}_{run_id}",
@@ -853,6 +860,13 @@ def page_analysis():
                     st.markdown(
                         f'<div class="f2-note">📋 파일2 보조 확인 — '
                         f'파일1에 없는 소비기한 <b>{r["f2_only_min"]}</b>이 파일2에 있어 최단 소비기한으로 사용</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                if r.get("is_gift_set"):
+                    st.markdown(
+                        f'<div class="f2-note">🎁 <b>선물세트</b> — 1개 구매 시 2개월치 소비량. '
+                        f'소비기한 <b>3개월 전</b> 조치 기준 적용 (일반 제품: 4개월 전)</div>',
                         unsafe_allow_html=True,
                     )
 
