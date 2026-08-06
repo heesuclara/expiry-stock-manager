@@ -333,14 +333,27 @@ def generate_report(brand_products, product_cats, product_f2_dates, today, resal
 
         f1_dates = [l["expiry"] for l in lots_sorted]
         f2_dates = product_f2_dates.get(code, [])
-        all_dates = f1_dates + f2_dates
-        min_expiry = min(all_dates)
 
-        f2_earlier     = [d for d in f2_dates if d < min(f1_dates)] if f1_dates else []
-        has_f2_only    = bool(f2_earlier)
-        f2_only_min    = min(f2_earlier) if f2_earlier else None
+        # ── File1 우선 기준: min_expiry는 신재고입출고(File1) 기준 ──
+        min_expiry = min(f1_dates)
+        f2_min     = min(f2_dates) if f2_dates else None
+
+        # 더블체크: File1·File2 최단 소비기한 차이 7일 초과 시 경고
+        needs_doublecheck = bool(
+            f2_min and abs((f2_min - min_expiry).days) > 7
+        )
+        f2_discrepancy = (
+            f"File2({f2_min}) ≠ File1({min_expiry})" if needs_doublecheck else ""
+        )
+
+        # (하위 호환) f2_only_date 필드 유지 — 이제 경고 목적으로만 사용
+        has_f2_only_date = False
+        f2_only_min      = None
 
         months = months_remaining(min_expiry, today)
+
+        # 카카오 제품: 온라인채널팀 담당
+        is_kakao = "카카오" in info["name"]
 
         # 선물세트: 1개 = 2개월치 소비 → 3개월 전 조치 (일반: 4개월 전)
         is_gift_set = "선물세트" in info["name"]
@@ -394,27 +407,30 @@ def generate_report(brand_products, product_cats, product_f2_dates, today, resal
                 }
 
         results.append({
-            "urgency_order":    urgency_order,
-            "cat_order":        cat_order,
-            "action_date":      action_date,
-            "raw_action_date":  raw_action,
-            "weekend_adjusted": weekend_adj,
-            "urgency":          urgency,
-            "category":         cat,
-            "brand":            info["brand"],
-            "code":             code,
-            "name":             info["name"],
-            "min_expiry":       min_expiry,
-            "months_left":      months,
-            "total_stock":      total_stock,
-            "action":           action,
-            "lots":             lots_sorted,
-            "has_f2_only_date": has_f2_only,
-            "f2_only_min":      f2_only_min,
-            "has_resale":       resale_info is not None,
-            "resale_info":      resale_info,
-            "incoming_info":    incoming_info,
-            "is_gift_set":      is_gift_set,
+            "urgency_order":      urgency_order,
+            "cat_order":          cat_order,
+            "action_date":        action_date,
+            "raw_action_date":    raw_action,
+            "weekend_adjusted":   weekend_adj,
+            "urgency":            urgency,
+            "category":           cat,
+            "brand":              info["brand"],
+            "code":               code,
+            "name":               info["name"],
+            "min_expiry":         min_expiry,
+            "months_left":        months,
+            "total_stock":        total_stock,
+            "action":             action,
+            "lots":               lots_sorted,
+            "has_f2_only_date":   has_f2_only_date,
+            "f2_only_min":        f2_only_min,
+            "has_resale":         resale_info is not None,
+            "resale_info":        resale_info,
+            "incoming_info":      incoming_info,
+            "is_gift_set":        is_gift_set,
+            "is_kakao":           is_kakao,
+            "needs_doublecheck":  needs_doublecheck,
+            "f2_discrepancy":     f2_discrepancy,
         })
 
     results.sort(key=lambda x: (x["urgency_order"], x["cat_order"], x["action_date"]))
@@ -527,12 +543,16 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
             inc_flag = "📦 입고예정" if inc["status"] == "입고예정" else "⛔ 미입고예정"
         else:
             inc_flag = ""
-        gift_flag = "🎁" if r.get("is_gift_set") else ""
+        gift_flag   = "🎁" if r.get("is_gift_set") else ""
+        kakao_flag  = "🍫온라인채널" if r.get("is_kakao") else ""
+        check_flag  = "⚠️더블체크" if r.get("needs_doublecheck") else ""
         rows.append({
             "✅ 완료": False,
             "재판매방지": resale_flag,
             "선물세트": gift_flag,
             "입고예정": inc_flag,
+            "담당": kakao_flag,
+            "더블체크": check_flag,
             "긴급도":     r["urgency"],
             "구분":       r["category"],
             "품명":       r["name"],
@@ -552,6 +572,8 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
             "재판매방지": st.column_config.TextColumn("✌️재판매", width="small"),
             "선물세트":  st.column_config.TextColumn("🎁세트", width="small"),
             "입고예정":  st.column_config.TextColumn("입고예정", width="small"),
+            "담당":      st.column_config.TextColumn("담당", width="small"),
+            "더블체크":  st.column_config.TextColumn("더블체크", width="small"),
             "긴급도":    st.column_config.TextColumn("긴급도", width="medium"),
             "구분":      st.column_config.TextColumn("구분", width="small"),
             "품명":      st.column_config.TextColumn("품명", width="large"),
@@ -561,7 +583,7 @@ def render_brand_checklist(results: list, brand: str, run_id: int):
             "액션 날짜": st.column_config.TextColumn("액션 날짜", width="medium"),
             "조치사항":  st.column_config.TextColumn("조치사항", width="large"),
         },
-        disabled=["재판매방지","선물세트","입고예정","긴급도","구분","품명","소비기한","남은 기간","재고(개)","액션 날짜","조치사항"],
+        disabled=["재판매방지","선물세트","입고예정","담당","더블체크","긴급도","구분","품명","소비기한","남은 기간","재고(개)","액션 날짜","조치사항"],
         hide_index=True,
         use_container_width=True,
         key=f"checklist_{brand}_{run_id}",
@@ -863,6 +885,21 @@ def page_analysis():
                         unsafe_allow_html=True,
                     )
 
+                if r.get("is_kakao"):
+                    st.markdown(
+                        '<div class="f2-note">🍫 <b>카카오 제품 — 온라인채널팀 담당</b>. '
+                        '해당 팀과 협의 후 조치하세요.</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                if r.get("needs_doublecheck"):
+                    st.markdown(
+                        f'<div class="nostock-badge">⚠️ <b>소비기한 더블체크 필요</b> — '
+                        f'신재고입출고(File1) 기준으로 분석했으나 파일 간 날짜 차이 발생<br>'
+                        f'📋 {r["f2_discrepancy"]} — <b>신재고입출고 날짜가 최종 기준</b></div>',
+                        unsafe_allow_html=True,
+                    )
+
                 if r.get("is_gift_set"):
                     st.markdown(
                         f'<div class="f2-note">🎁 <b>선물세트</b> — 1개 구매 시 2개월치 소비량. '
@@ -930,6 +967,15 @@ def page_analysis():
                 )
 
                 if len(r["lots"]) > 1:
+                    lots_expiries = sorted(set(l["expiry"] for l in r["lots"]))
+                    if len(lots_expiries) >= 2:
+                        early, late = lots_expiries[0], lots_expiries[-1]
+                        st.markdown(
+                            f'<div class="incoming-badge">📦 <b>선입선출(FIFO) 안내</b> — '
+                            f'유통기한 빠른 재고(<b>{early}</b>) 조치 시점에 '
+                            f'유통기한 늦은 재고(<b>{late}</b>)로 교체 발송 준비</div>',
+                            unsafe_allow_html=True,
+                        )
                     st.caption(f"로트 상세 ({len(r['lots'])}개)")
                     lots_df = pd.DataFrame([
                         {
